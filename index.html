@@ -45,6 +45,13 @@
   .tx-amount { font-weight:750; white-space:nowrap; }
   .income { color:#267246; } .expense { color:var(--red); }
   .empty { color:var(--muted); text-align:center; padding:16px 6px; font-size:14px; }
+  .chart-caption { color:var(--muted); margin:-6px 0 12px; font-size:13px; }
+  .chart-wrap { width:100%; overflow:hidden; }
+  .chart-svg { display:block; width:100%; height:auto; min-height:150px; }
+  .chart-gridline { stroke:#e5ebe5; stroke-width:1; }
+  .chart-axis-label { fill:var(--muted); font-size:11px; }
+  .chart-line { fill:none; stroke:var(--green2); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+  .chart-point { fill:var(--mint); stroke:var(--green2); stroke-width:2; }
   .footer { color:var(--muted); text-align:center; font-size:12px; padding:18px 8px 0; }
   @media (max-width:420px) { .hero{padding:20px}.panel{padding:15px}.grid{gap:8px} }
 </style>
@@ -76,6 +83,13 @@
     <div class="field"><label for="description">Комментарий (необязательно)</label><input id="description" maxlength="80" placeholder="Например, отложил с зарплаты"></div>
     <div class="grid"><button class="primary" id="addMoney">＋ Пополнить</button><button class="secondary" id="takeMoney">− Снять</button></div>
     <div id="moneyNotice" class="notice" role="status" hidden></div>
+  </section>
+
+  <section class="panel">
+    <h2>Динамика накоплений</h2>
+    <p class="chart-caption">Как менялся баланс после пополнений и снятий</p>
+    <div class="chart-wrap" id="chart" role="img" aria-label="График изменения баланса"></div>
+    <div id="chartSummary" class="notice" role="status"></div>
   </section>
 
   <section class="panel">
@@ -141,6 +155,84 @@
     $("goalInput").value = state.goal;
     $("currency").value = state.currency;
     renderHistory();
+    renderChart();
+  }
+  function renderChart() {
+    const root = $("chart");
+    root.replaceChildren();
+
+    // Восстанавливаем баланс после каждой операции и показываем последние 30 точек.
+    const transactions = state.transactions
+      .map((tx, index) => ({ ...tx, _index: index }))
+      .sort((a, b) => new Date(a.date) - new Date(b.date) || a._index - b._index);
+
+    let runningBalance = 0;
+    const timeline = [{ balance: 0, date: transactions[0]?.date || new Date().toISOString() }];
+    for (const tx of transactions) {
+      const amount = Number(tx.amount) || 0;
+      runningBalance = Math.round((runningBalance + (tx.type === "in" ? amount : -amount)) * 100) / 100;
+      timeline.push({ balance: Math.max(0, runningBalance), date: tx.date });
+    }
+    if (timeline.length === 1) {
+      timeline.push({ balance: Math.max(0, state.balance), date: new Date().toISOString() });
+    } else if (Math.abs(timeline[timeline.length - 1].balance - state.balance) >= 0.01) {
+      timeline.push({ balance: Math.max(0, state.balance), date: new Date().toISOString() });
+    }
+    const visible = timeline.length > 30 ? timeline.slice(-30) : timeline;
+    const width = 600, height = 230;
+    const pad = { left: 64, right: 14, top: 16, bottom: 30 };
+    const plotWidth = width - pad.left - pad.right;
+    const plotHeight = height - pad.top - pad.bottom;
+    const maxBalance = Math.max(1, ...visible.map(point => point.balance));
+    const x = i => visible.length === 1 ? pad.left + plotWidth / 2 : pad.left + (i / (visible.length - 1)) * plotWidth;
+    const y = value => pad.top + plotHeight - (value / maxBalance) * plotHeight;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("class", "chart-svg");
+    svg.setAttribute("aria-hidden", "true");
+
+    for (const fraction of [0, 0.5, 1]) {
+      const value = maxBalance * fraction;
+      const yy = y(value);
+      const grid = document.createElementNS(svg.namespaceURI, "line");
+      grid.setAttribute("x1", pad.left); grid.setAttribute("x2", width - pad.right);
+      grid.setAttribute("y1", yy); grid.setAttribute("y2", yy);
+      grid.setAttribute("class", "chart-gridline"); svg.append(grid);
+      const label = document.createElementNS(svg.namespaceURI, "text");
+      label.setAttribute("x", pad.left - 8); label.setAttribute("y", yy + 4);
+      label.setAttribute("text-anchor", "end"); label.setAttribute("class", "chart-axis-label");
+      label.textContent = new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+      svg.append(label);
+    }
+
+    const polyline = document.createElementNS(svg.namespaceURI, "polyline");
+    polyline.setAttribute("points", visible.map((point, i) => `${x(i)},${y(point.balance)}`).join(" "));
+    polyline.setAttribute("class", "chart-line"); svg.append(polyline);
+
+    visible.forEach((point, i) => {
+      const circle = document.createElementNS(svg.namespaceURI, "circle");
+      circle.setAttribute("cx", x(i)); circle.setAttribute("cy", y(point.balance));
+      circle.setAttribute("r", i === visible.length - 1 ? 5 : 3.5);
+      circle.setAttribute("class", "chart-point");
+      const title = document.createElementNS(svg.namespaceURI, "title");
+      title.textContent = `${new Date(point.date).toLocaleDateString("ru-RU")}: ${formatMoney(point.balance)}`;
+      circle.append(title); svg.append(circle);
+    });
+
+    const firstLabel = document.createElementNS(svg.namespaceURI, "text");
+    firstLabel.setAttribute("x", pad.left); firstLabel.setAttribute("y", height - 8);
+    firstLabel.setAttribute("class", "chart-axis-label");
+    firstLabel.textContent = visible.length > 1 ? new Date(visible[0].date).toLocaleDateString("ru-RU") : "Старт";
+    svg.append(firstLabel);
+    const lastLabel = document.createElementNS(svg.namespaceURI, "text");
+    lastLabel.setAttribute("x", width - pad.right); lastLabel.setAttribute("y", height - 8);
+    lastLabel.setAttribute("text-anchor", "end"); lastLabel.setAttribute("class", "chart-axis-label");
+    lastLabel.textContent = "Сейчас"; svg.append(lastLabel);
+    root.append(svg);
+
+    const shownOperations = Math.max(0, visible.length - 1);
+    $("chartSummary").textContent = `Сейчас в копилке ${formatMoney(state.balance)}. На графике — ${shownOperations} ${shownOperations === 1 ? "шаг" : shownOperations >= 2 && shownOperations <= 4 ? "шага" : "шагов"}${timeline.length > visible.length ? " (последние операции)" : ""}.`;
   }
   function renderHistory() {
     const root = $("history"); root.replaceChildren();
