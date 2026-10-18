@@ -52,6 +52,13 @@
   .chart-axis-label { fill:var(--muted); font-size:11px; }
   .chart-line { fill:none; stroke:var(--green2); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
   .chart-point { fill:var(--mint); stroke:var(--green2); stroke-width:2; }
+  .expense-list { display:grid; gap:13px; }
+  .expense-row { display:grid; grid-template-columns:minmax(90px, 1fr) minmax(70px, 1.8fr) auto; gap:10px; align-items:center; }
+  .expense-name { font-size:13px; font-weight:650; overflow-wrap:anywhere; }
+  .expense-track { height:9px; background:#edf2ed; border-radius:99px; overflow:hidden; }
+  .expense-fill { height:100%; min-width:0; background:var(--green2); border-radius:99px; }
+  .expense-value { font-size:13px; font-weight:750; text-align:right; white-space:nowrap; }
+  .tx-category { margin-top:2px; color:var(--muted); font-size:12px; }
   .footer { color:var(--muted); text-align:center; font-size:12px; padding:18px 8px 0; }
   @media (max-width:420px) { .hero{padding:20px}.panel{padding:15px}.grid{gap:8px} }
 </style>
@@ -80,7 +87,19 @@
   <section class="panel">
     <h2>Движение денег</h2>
     <div class="field"><label for="amount">Сумма</label><input id="amount" type="number" min="0.01" step="0.01" placeholder="Например, 50" inputmode="decimal"></div>
-    <div class="field"><label for="description">Комментарий (необязательно)</label><input id="description" maxlength="80" placeholder="Например, отложил с зарплаты"></div>
+    <div class="field"><label for="description">Комментарий (необязательно)</label><input id="description" maxlength="80" placeholder="Например, продукты в магазине"></div>
+    <div class="field"><label for="expenseCategory">Категория расхода (для кнопки «Снять»)</label>
+      <select id="expenseCategory">
+        <option value="Прочее" selected>Прочее</option>
+        <option value="Продукты">Продукты</option>
+        <option value="Транспорт">Транспорт</option>
+        <option value="Дом и счета">Дом и счета</option>
+        <option value="Развлечения">Развлечения</option>
+        <option value="Здоровье">Здоровье</option>
+        <option value="Покупки">Покупки</option>
+        <option value="Подписки">Подписки</option>
+      </select>
+    </div>
     <div class="grid"><button class="primary" id="addMoney">＋ Пополнить</button><button class="secondary" id="takeMoney">− Снять</button></div>
     <div id="moneyNotice" class="notice" role="status" hidden></div>
   </section>
@@ -93,12 +112,19 @@
   </section>
 
   <section class="panel">
+    <h2>Расходы по категориям</h2>
+    <p class="chart-caption">Сводка всех операций «Снять», сгруппированных по категории</p>
+    <div class="expense-list" id="expenseCategories"></div>
+    <div id="expenseSummary" class="notice" role="status"></div>
+  </section>
+
+  <section class="panel">
     <h2>История операций</h2>
     <div class="history" id="history"></div>
     <button class="secondary small" id="clearHistory" style="margin-top:10px">Очистить историю и начать заново</button>
     <div id="resetNotice" class="notice" role="status" hidden></div>
   </section>
-  <p class="footer">Учебное приложение. Данные хранятся только в этом браузере на этом устройстве. Это не банковский счёт и не переводит реальные деньги.</p>
+  <p class="footer">Учебное приложение. Баланс, история и категории хранятся только в этом браузере на этом устройстве. Это не банковский счёт и не переводит реальные деньги.</p>
 </main>
 <script>
 (() => {
@@ -156,6 +182,42 @@
     $("currency").value = state.currency;
     renderHistory();
     renderChart();
+    renderExpenses();
+  }
+  function renderExpenses() {
+    const root = $("expenseCategories");
+    root.replaceChildren();
+    const totals = new Map();
+    for (const tx of state.transactions) {
+      if (tx.type !== "out") continue;
+      const category = tx.category || "Прочее";
+      totals.set(category, (totals.get(category) || 0) + (Number(tx.amount) || 0));
+    }
+    const rows = Array.from(totals, ([category, amount]) => ({ category, amount }))
+      .sort((a, b) => b.amount - a.amount);
+    const total = rows.reduce((sum, row) => sum + row.amount, 0);
+    if (!rows.length || total <= 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Пока нет расходов. Когда нажмёшь «Снять», выбери категорию — и здесь появится сводка.";
+      root.append(empty);
+      $("expenseSummary").textContent = "Всего расходов: " + formatMoney(0);
+      return;
+    }
+    for (const rowData of rows) {
+      const row = document.createElement("div"); row.className = "expense-row";
+      const name = document.createElement("div"); name.className = "expense-name"; name.textContent = rowData.category;
+      const track = document.createElement("div"); track.className = "expense-track";
+      const fill = document.createElement("div"); fill.className = "expense-fill";
+      fill.style.width = `${Math.max(0, Math.min(100, rowData.amount / total * 100))}%`;
+      track.append(fill);
+      const value = document.createElement("div"); value.className = "expense-value";
+      value.textContent = formatMoney(rowData.amount);
+      row.append(name, track, value); root.append(row);
+    }
+    const biggest = rows[0];
+    const share = Math.round(biggest.amount / total * 100);
+    $("expenseSummary").textContent = `Всего расходов: ${formatMoney(total)}. Больше всего потрачено на «${biggest.category}» — ${share}% от всех расходов.`;
   }
   function renderChart() {
     const root = $("chart");
@@ -248,6 +310,11 @@
       const date = document.createElement("div"); date.className = "tx-date";
       const parsedDate = new Date(tx.date); date.textContent = Number.isNaN(parsedDate.getTime()) ? "" : parsedDate.toLocaleString("ru-RU");
       main.append(name, date);
+      if (tx.type === "out") {
+        const category = document.createElement("div"); category.className = "tx-category";
+        category.textContent = `Категория: ${tx.category || "Прочее"}`;
+        main.append(category);
+      }
       const amount = document.createElement("div"); amount.className = `tx-amount ${tx.type === "in" ? "income" : "expense"}`;
       amount.textContent = `${tx.type === "in" ? "+" : "−"}${formatMoney(tx.amount)}`;
       row.append(icon, main, amount); root.append(row);
@@ -265,7 +332,8 @@
     if (type === "out" && amount > state.balance) { showNotice("moneyNotice", "Недостаточно денег в копилке.", true); return; }
     state.balance = Math.round((state.balance + (type === "in" ? amount : -amount)) * 100) / 100;
     const description = $("description").value.trim() || (type === "in" ? "Пополнение" : "Снятие");
-    state.transactions.push({ id: Date.now() + Math.random(), type, amount, description, date: new Date().toISOString() });
+    const category = type === "out" ? $("expenseCategory").value : "Пополнение";
+    state.transactions.push({ id: Date.now() + Math.random(), type, amount, description, category, date: new Date().toISOString() });
     saveState(); render();
     $("amount").value = ""; $("description").value = "";
     showNotice("moneyNotice", type === "in" ? "Пополнение сохранено!" : "Снятие сохранено.");
